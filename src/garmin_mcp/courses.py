@@ -223,7 +223,13 @@ def register_tools(app):
             _p = pathlib.Path(gpx_path)
             if _p.suffix.lower() != ".gpx":
                 return f"Error: only .gpx files are allowed, got: {_p.suffix or '(no extension)'}"
-            gpx_path = str(_p.resolve())
+            if _p.is_symlink():
+                return "Error: symlinks are not allowed for GPX uploads"
+            resolved = _p.resolve()
+            home = pathlib.Path.home().resolve()
+            if not str(resolved).startswith(str(home)):
+                return f"Error: GPX file must be located within the user home directory ({home})"
+            gpx_path = str(resolved)
             if not os.path.isfile(gpx_path):
                 return f"Error: GPX file not found: {gpx_path}"
 
