@@ -1,6 +1,8 @@
 import json
 import os
 
+import pytest
+
 from garmin_mcp.workout_builders import (
     build_walk_run_json,
     build_z2_walk_json,
@@ -28,6 +30,141 @@ def test_build_walk_run_json_matches_poc_snapshot():
         expected = json.load(f)
 
     assert result == expected
+
+
+def _repeat_steps(result):
+    """Return the run/walk steps inside the repeat group of a walk/run workout."""
+    repeat = result["workoutSegments"][0]["workoutSteps"][1]
+    assert repeat["type"] == "RepeatGroupDTO"
+    return repeat["workoutSteps"]
+
+
+def test_build_walk_run_json_distance_goals():
+    """Distance intervals end on distance instead of time."""
+    result = build_walk_run_json(
+        name="Run 5x400m",
+        repeats=5,
+        warmup_min=10,
+        cooldown_min=5,
+        run_distance_m=400,
+        walk_distance_m=200,
+        hr_zone="Z4",
+    )
+    run_step, walk_step = _repeat_steps(result)
+    assert run_step["endCondition"] == {"conditionTypeId": 3, "conditionTypeKey": "distance"}
+    assert run_step["endConditionValue"] == 400.0
+    assert walk_step["endConditionValue"] == 200.0
+    # Distance + HR zone target preserved
+    assert run_step["targetType"]["workoutTargetTypeKey"] == "heart.rate.zone"
+    assert run_step["zoneNumber"] == 4
+    assert "400m run / 200m walk" in result["description"]
+
+
+def test_build_walk_run_json_pace_target():
+    """Pace targets produce a pace.zone speed window in m/s."""
+    result = build_walk_run_json(
+        name="Tempo intervals",
+        repeats=4,
+        warmup_min=10,
+        cooldown_min=5,
+        run_seconds=300,
+        walk_seconds=120,
+        target_type="pace",
+        run_pace="5:00",
+        walk_pace="8:00",
+        pace_tolerance_sec=10,
+    )
+    run_step, walk_step = _repeat_steps(result)
+    assert run_step["targetType"] == {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone"}
+    assert "zoneNumber" not in run_step
+    # 5:00/km = 300s/km. With +/-10s window: 310s (slow) -> 1000/310 m/s, 290s (fast) -> 1000/290 m/s
+    assert run_step["targetValueOne"] == pytest.approx(1000.0 / 310.0, rel=1e-4)
+    assert run_step["targetValueTwo"] == pytest.approx(1000.0 / 290.0, rel=1e-4)
+    assert run_step["targetValueOne"] < run_step["targetValueTwo"]
+    assert walk_step["targetValueOne"] == pytest.approx(1000.0 / 490.0, rel=1e-4)
+
+
+def test_build_walk_run_json_pace_and_distance_combined():
+    result = build_walk_run_json(
+        name="Pace by distance",
+        repeats=3,
+        warmup_min=10,
+        cooldown_min=5,
+        run_distance_m=1000,
+        walk_distance_m=400,
+        target_type="pace",
+        run_pace="4:30",
+        walk_pace="7:00",
+    )
+    run_step, _ = _repeat_steps(result)
+    assert run_step["endCondition"]["conditionTypeKey"] == "distance"
+    assert run_step["targetType"]["workoutTargetTypeKey"] == "pace.zone"
+
+
+def test_build_walk_run_json_pace_mile_unit():
+    result = build_walk_run_json(
+        name="Mile pace",
+        repeats=2,
+        warmup_min=10,
+        cooldown_min=5,
+        run_seconds=300,
+        walk_seconds=120,
+        target_type="pace",
+        run_pace="8:00",
+        walk_pace="12:00",
+        pace_tolerance_sec=0,
+        pace_unit="mi",
+    )
+    run_step, _ = _repeat_steps(result)
+    # 8:00/mile = 480s/mile; tolerance 0 -> low == high == 1609.344/480
+    assert run_step["targetValueOne"] == pytest.approx(1609.344 / 480.0, rel=1e-4)
+
+
+def test_build_walk_run_json_pace_requires_pace_values():
+    with pytest.raises(ValueError, match="requires a pace value"):
+        build_walk_run_json(
+            name="bad",
+            repeats=2,
+            warmup_min=10,
+            cooldown_min=5,
+            run_seconds=300,
+            walk_seconds=120,
+            target_type="pace",
+        )
+
+
+def test_build_walk_run_json_distance_requires_both():
+    with pytest.raises(ValueError, match="both run_distance_m and walk_distance_m"):
+        build_walk_run_json(
+            name="bad",
+            repeats=2,
+            warmup_min=10,
+            cooldown_min=5,
+            run_distance_m=400,
+        )
+
+
+def test_build_walk_run_json_time_requires_both():
+    with pytest.raises(ValueError, match="run_seconds and walk_seconds"):
+        build_walk_run_json(
+            name="bad",
+            repeats=2,
+            warmup_min=10,
+            cooldown_min=5,
+        )
+
+
+def test_build_walk_run_json_invalid_target_type():
+    with pytest.raises(ValueError, match="Invalid target_type"):
+        build_walk_run_json(
+            name="bad",
+            repeats=2,
+            warmup_min=10,
+            cooldown_min=5,
+            run_seconds=300,
+            walk_seconds=120,
+            target_type="power",
+        )
 
 
 def test_build_z2_walk_json_structure():
